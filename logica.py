@@ -53,3 +53,47 @@ def calcular_rsi(serie: pd.Series, periodo: int = 14) -> pd.Series:
 
     rs = avg_gan / avg_per
     return 100 - 100 / (1 + rs)
+
+
+# ---------------------------------------------------------------------------
+# Señal educativa
+# ---------------------------------------------------------------------------
+
+def generar_senal(df: pd.DataFrame) -> tuple[str, str]:
+    """Genera una señal educativa COMPRAR/VENDER/MANTENER.
+
+    Espera columnas ``SMA_20``, ``SMA_50`` y ``RSI_14`` ya calculadas. Toma la
+    última fila donde las tres están definidas y aplica el criterio del SPEC:
+
+    * ``COMPRAR`` si ``SMA_20 > SMA_50`` y ``RSI < 70``.
+    * ``VENDER`` si ``SMA_20 < SMA_50`` o ``RSI > 70``.
+    * ``MANTENER`` en cualquier otro caso.
+
+    Devuelve ``(senal, motivo)``; el motivo cita los valores numéricos para que
+    el usuario pueda entender la decisión.
+    """
+    fila = df[["SMA_20", "SMA_50", "RSI_14"]].dropna().iloc[-1]
+    sma20, sma50, rsi = fila["SMA_20"], fila["SMA_50"], fila["RSI_14"]
+
+    if sma20 > sma50 and rsi < 70:
+        motivo = (
+            f"SMA20 ({sma20:.2f}) supera a SMA50 ({sma50:.2f}) "
+            f"y RSI={rsi:.1f} no está sobrecomprado."
+        )
+        return "COMPRAR", motivo
+
+    if sma20 < sma50 or rsi > 70:
+        razones: list[str] = []
+        if sma20 < sma50:
+            razones.append(
+                f"SMA20 ({sma20:.2f}) por debajo de SMA50 ({sma50:.2f})"
+            )
+        if rsi > 70:
+            razones.append(f"RSI={rsi:.1f} > 70 (sobrecompra)")
+        return "VENDER", "; ".join(razones) + "."
+
+    motivo = (
+        f"SMA20 ({sma20:.2f}) ≈ SMA50 ({sma50:.2f}) "
+        f"y RSI={rsi:.1f} en zona neutra."
+    )
+    return "MANTENER", motivo

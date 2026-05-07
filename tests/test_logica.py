@@ -9,7 +9,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from logica import calcular_rsi, calcular_smas
+from logica import calcular_rsi, calcular_smas, generar_senal
 
 
 # ---------------------------------------------------------------------------
@@ -67,3 +67,55 @@ def test_rsi_longitud_insuficiente_devuelve_nan() -> None:
     rsi = calcular_rsi(serie, periodo=14)
 
     assert rsi.isna().all()
+
+
+# ---------------------------------------------------------------------------
+# T3 — Señal educativa
+# ---------------------------------------------------------------------------
+
+def _df_indicadores(sma20: float, sma50: float, rsi: float) -> pd.DataFrame:
+    """Construye un DataFrame mínimo con los valores finales necesarios."""
+    return pd.DataFrame(
+        {
+            "SMA_20": [float("nan"), sma20],
+            "SMA_50": [float("nan"), sma50],
+            "RSI_14": [float("nan"), rsi],
+        }
+    )
+
+
+def test_senal_comprar_cuando_sma20_supera_sma50_y_rsi_bajo() -> None:
+    df = _df_indicadores(sma20=105.0, sma50=100.0, rsi=55.0)
+
+    senal, motivo = generar_senal(df)
+
+    assert senal == "COMPRAR"
+    # El motivo debe ser explicativo y citar valores numéricos.
+    assert "105" in motivo and "100" in motivo
+
+
+def test_senal_vender_cuando_sma20_bajo_sma50() -> None:
+    df = _df_indicadores(sma20=95.0, sma50=100.0, rsi=50.0)
+
+    senal, motivo = generar_senal(df)
+
+    assert senal == "VENDER"
+    assert "95" in motivo
+
+
+def test_senal_vender_cuando_rsi_sobrecomprado() -> None:
+    df = _df_indicadores(sma20=110.0, sma50=100.0, rsi=75.0)
+
+    senal, motivo = generar_senal(df)
+
+    assert senal == "VENDER"
+    assert "75" in motivo
+
+
+def test_senal_mantener_caso_neutro() -> None:
+    """SMA20 == SMA50 y RSI moderado: ninguna condición clara."""
+    df = _df_indicadores(sma20=100.0, sma50=100.0, rsi=50.0)
+
+    senal, _ = generar_senal(df)
+
+    assert senal == "MANTENER"
