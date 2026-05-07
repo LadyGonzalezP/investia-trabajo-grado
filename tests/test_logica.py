@@ -6,10 +6,16 @@ casos T1–T15 documentados en SPEC.md.
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
-from logica import calcular_rsi, calcular_smas, generar_senal
+from logica import (
+    calcular_metricas,
+    calcular_rsi,
+    calcular_smas,
+    generar_senal,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -119,3 +125,23 @@ def test_senal_mantener_caso_neutro() -> None:
     senal, _ = generar_senal(df)
 
     assert senal == "MANTENER"
+
+
+# ---------------------------------------------------------------------------
+# T4 — Métricas
+# ---------------------------------------------------------------------------
+
+def test_metricas_calcula_variacion_y_volatilidad() -> None:
+    closes = [100.0, 102.0, 101.0, 103.0, 110.0]
+    df = pd.DataFrame({"Close": closes})
+
+    metricas = calcular_metricas(df)
+
+    assert metricas["precio_actual"] == pytest.approx(110.0)
+    assert metricas["variacion_pct"] == pytest.approx(10.0)  # (110/100 - 1) * 100
+    assert metricas["stop_loss"] == pytest.approx(110.0 * 0.95)
+    assert metricas["take_profit"] == pytest.approx(110.0 * 1.10)
+
+    pct = pd.Series(closes).pct_change().dropna()
+    esperada = pct.std() * np.sqrt(252) * 100
+    assert metricas["volatilidad_anual_pct"] == pytest.approx(esperada)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
+import numpy as np
 import pandas as pd
 
 
@@ -97,3 +98,43 @@ def generar_senal(df: pd.DataFrame) -> tuple[str, str]:
         f"y RSI={rsi:.1f} en zona neutra."
     )
     return "MANTENER", motivo
+
+
+# ---------------------------------------------------------------------------
+# Métricas de portafolio individual
+# ---------------------------------------------------------------------------
+
+DIAS_HABILES_ANUALES = 252  # convención de finanzas para anualizar volatilidad
+
+PORCENTAJE_STOP_LOSS = 0.95  # -5 % sobre el precio actual
+PORCENTAJE_TAKE_PROFIT = 1.10  # +10 % sobre el precio actual
+
+
+def calcular_metricas(df: pd.DataFrame) -> dict[str, float]:
+    """Calcula KPIs descriptivos sobre el rango analizado.
+
+    Devuelve un diccionario con claves estables:
+
+    * ``precio_actual``: último cierre.
+    * ``variacion_pct``: variación porcentual entre el primer y último cierre.
+    * ``volatilidad_anual_pct``: desviación estándar de los retornos diarios
+      anualizada (multiplicada por √252) y convertida a porcentaje.
+    * ``stop_loss``: precio actual * 0.95.
+    * ``take_profit``: precio actual * 1.10.
+    """
+    cierres = df["Close"]
+    precio_actual = float(cierres.iloc[-1])
+    precio_inicial = float(cierres.iloc[0])
+
+    variacion_pct = (precio_actual / precio_inicial - 1) * 100
+
+    retornos = cierres.pct_change().dropna()
+    volatilidad_anual_pct = float(retornos.std() * np.sqrt(DIAS_HABILES_ANUALES) * 100)
+
+    return {
+        "precio_actual": precio_actual,
+        "variacion_pct": variacion_pct,
+        "volatilidad_anual_pct": volatilidad_anual_pct,
+        "stop_loss": precio_actual * PORCENTAJE_STOP_LOSS,
+        "take_profit": precio_actual * PORCENTAJE_TAKE_PROFIT,
+    }
