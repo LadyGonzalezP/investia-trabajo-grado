@@ -9,7 +9,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from logica import calcular_smas
+from logica import calcular_rsi, calcular_smas
 
 
 # ---------------------------------------------------------------------------
@@ -36,3 +36,34 @@ def test_sma_devuelve_nan_antes_de_completar_ventana() -> None:
 
     assert resultado["SMA_20"].isna().all()
     assert resultado["SMA_50"].isna().all()
+
+
+# ---------------------------------------------------------------------------
+# T2 — RSI (Wilder)
+# ---------------------------------------------------------------------------
+
+def test_rsi_valor_conocido_serie_creciente() -> None:
+    """En una serie estrictamente creciente no hay pérdidas -> RSI tiende a 100."""
+    serie = pd.Series([float(x) for x in range(1, 31)])
+
+    rsi = calcular_rsi(serie, periodo=14)
+
+    assert rsi.iloc[-1] == pytest.approx(100.0)
+
+
+def test_rsi_serie_decreciente_aproxima_cero() -> None:
+    """En una serie estrictamente decreciente no hay ganancias -> RSI tiende a 0."""
+    serie = pd.Series([float(x) for x in range(30, 0, -1)])
+
+    rsi = calcular_rsi(serie, periodo=14)
+
+    assert rsi.iloc[-1] == pytest.approx(0.0)
+
+
+def test_rsi_longitud_insuficiente_devuelve_nan() -> None:
+    """Con menos filas que el periodo no hay datos suficientes -> todo NaN."""
+    serie = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
+
+    rsi = calcular_rsi(serie, periodo=14)
+
+    assert rsi.isna().all()
