@@ -13,14 +13,20 @@ import pytest
 from logica import (
     SALDO_INICIAL_USD,
     TransaccionInvalida,
+    UsuarioYaExiste,
     aplicar_transaccion,
     calcular_metricas,
     calcular_rsi,
     calcular_smas,
     calcular_tenencias,
     cargar_portafolio,
+    cargar_usuarios,
     generar_senal,
     guardar_portafolio,
+    guardar_usuarios,
+    hash_password,
+    registrar_usuario,
+    verificar_credenciales,
 )
 
 
@@ -259,3 +265,60 @@ def test_calcular_tenencias_neta_correctamente() -> None:
     assert tenencias["AAPL"]["precio_promedio"] == pytest.approx(150.0)
     assert tenencias["MSFT"]["cantidad"] == 3
     assert tenencias["MSFT"]["precio_promedio"] == pytest.approx(300.0)
+
+
+# ---------------------------------------------------------------------------
+# T6.5 — Autenticación
+# ---------------------------------------------------------------------------
+
+def test_registrar_usuario_nuevo_anade_entrada_con_hash() -> None:
+    """El nuevo registro NO debe contener la contraseña en claro."""
+    nuevo = registrar_usuario([], "lady", "mi-clave-segura")
+
+    assert len(nuevo) == 1
+    entry = nuevo[0]
+    assert entry["usuario"] == "lady"
+    assert "salt" in entry and len(entry["salt"]) >= 32
+    assert "hash" in entry and len(entry["hash"]) == 64  # sha256 hex
+    # La contraseña en claro NUNCA debe aparecer en los datos persistidos.
+    assert "mi-clave-segura" not in str(entry)
+
+
+def test_registrar_usuario_duplicado_lanza() -> None:
+    base = registrar_usuario([], "lady", "clave")
+
+    with pytest.raises(UsuarioYaExiste):
+        registrar_usuario(base, "lady", "otra-clave")
+
+
+def test_verificar_credenciales_correctas_devuelve_true() -> None:
+    usuarios = registrar_usuario([], "lady", "clave-correcta")
+
+    assert verificar_credenciales(usuarios, "lady", "clave-correcta") is True
+
+
+def test_verificar_credenciales_incorrectas_devuelve_false() -> None:
+    usuarios = registrar_usuario([], "lady", "clave-correcta")
+
+    assert verificar_credenciales(usuarios, "lady", "clave-mala") is False
+    assert verificar_credenciales(usuarios, "no-existe", "x") is False
+
+
+def test_hash_password_diferente_salt_genera_hash_diferente() -> None:
+    """Dos usuarios con la misma contraseña deben tener hashes distintos."""
+    h1 = hash_password("clave", "salt-uno")
+    h2 = hash_password("clave", "salt-dos")
+
+    assert h1 != h2
+    # Pero el mismo input debe ser determinístico.
+    assert hash_password("clave", "salt-uno") == h1
+
+
+def test_guardar_y_cargar_usuarios_es_idempotente(tmp_path) -> None:
+    ruta = tmp_path / "usuarios.json"
+    usuarios = registrar_usuario([], "lady", "clave")
+
+    guardar_usuarios(ruta, usuarios)
+    cargados = cargar_usuarios(ruta)
+
+    assert cargados == usuarios

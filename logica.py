@@ -7,7 +7,10 @@ de forma determinística con pytest.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
+from datetime import date
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -259,3 +262,78 @@ def aplicar_transaccion(
 
     nuevo["transacciones"].append(dict(tx))
     return nuevo
+
+
+# ---------------------------------------------------------------------------
+# Autenticación local (sha256 + salt aleatorio por usuario)
+# ---------------------------------------------------------------------------
+
+# La autenticación es deliberadamente simple: no hay sesiones server-side,
+# no hay tokens, no hay base de datos. Se persiste solo el salt y el hash de
+# cada contraseña para cumplir con el principio de no almacenar credenciales
+# en claro en un trabajo académico.
+
+LONGITUD_SALT_BYTES = 16  # 16 bytes -> 32 caracteres hex
+
+
+class UsuarioYaExiste(ValueError):
+    """Se intentó registrar un usuario con un nombre ya tomado."""
+
+
+def hash_password(password: str, salt: str) -> str:
+    """Devuelve el SHA-256 hexadecimal de ``salt + password``.
+
+    Determinístico para los mismos inputs (necesario para verificar el login)
+    pero distinto para salts distintos (lo que evita que dos usuarios con la
+    misma contraseña compartan hash).
+    """
+    return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+
+
+def cargar_usuarios(ruta: str | Path) -> list[dict[str, str]]:
+    """Lee la lista de usuarios desde disco. Lista vacía si el archivo no existe."""
+    ruta = Path(ruta)
+    if not ruta.exists():
+        return []
+    with ruta.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def guardar_usuarios(ruta: str | Path, usuarios: list[dict[str, str]]) -> None:
+    """Persiste la lista de usuarios de forma atómica (igual estrategia que portafolio)."""
+    ruta = Path(ruta)
+    tmp = ruta.with_suffix(ruta.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(usuarios, fh, ensure_ascii=False, indent=2)
+    tmp.replace(ruta)
+
+
+def registrar_usuario(
+    usuarios: list[dict[str, str]], nombre: str, password: str
+) -> list[dict[str, str]]:
+    """Devuelve una nueva lista con el usuario añadido.
+
+    No muta la lista original. Lanza :class:`UsuarioYaExiste` si el nombre ya
+    está tomado (comparación sensible a mayúsculas/minúsculas, decisión simple).
+    """
+    if any(u["usuario"] == nombre for u in usuarios):
+        raise UsuarioYaExiste(f"El usuario '{nombre}' ya existe.")
+
+    salt = secrets.token_hex(LONGITUD_SALT_BYTES)
+    nuevo_registro = {
+        "usuario": nombre,
+        "salt": salt,
+        "hash": hash_password(password, salt),
+        "creado": date.today().isoformat(),
+    }
+    return [*usuarios, nuevo_registro]
+
+
+def verificar_credenciales(
+    usuarios: list[dict[str, str]], nombre: str, password: str
+) -> bool:
+    """Devuelve True solo si el usuario existe y la contraseña coincide."""
+    for u in usuarios:
+        if u["usuario"] == nombre:
+            return hash_password(password, u["salt"]) == u["hash"]
+    return False
