@@ -88,8 +88,8 @@ Pasos en PowerShell (Windows):
 
 ```powershell
 # Clonar el repositorio
-git clone <URL-DEL-REPO> trabajo-grado
-cd trabajo-grado
+git clone https://github.com/LadyGonzalezP/investia-trabajo-grado.git
+cd investia-trabajo-grado
 
 # Crear y activar entorno virtual
 python -m venv venv
