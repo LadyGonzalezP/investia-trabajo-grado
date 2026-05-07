@@ -175,3 +175,87 @@ def guardar_portafolio(ruta: str | Path, estado: dict[str, Any]) -> None:
     with tmp.open("w", encoding="utf-8") as fh:
         json.dump(estado, fh, ensure_ascii=False, indent=2)
     tmp.replace(ruta)
+
+
+# ---------------------------------------------------------------------------
+# Operaciones del portafolio
+# ---------------------------------------------------------------------------
+
+class TransaccionInvalida(ValueError):
+    """Se intentó aplicar una transacción que viola las reglas de negocio.
+
+    Casos previstos: compra que excede el saldo o venta que excede la tenencia
+    actual del símbolo (no se permite shorting en este prototipo).
+    """
+
+
+def calcular_tenencias(estado: dict[str, Any]) -> dict[str, dict[str, float]]:
+    """Reduce el histórico a tenencias netas por símbolo.
+
+    Usa **costo promedio ponderado**: cada compra suma cantidad y costo total;
+    cada venta reduce la cantidad y descuenta su parte proporcional del costo
+    total al precio promedio vigente. Devuelve solo símbolos con cantidad > 0.
+    """
+    acumulado: dict[str, dict[str, float]] = {}
+    for tx in estado["transacciones"]:
+        sim = tx["simbolo"]
+        registro = acumulado.setdefault(sim, {"cantidad": 0, "costo_total": 0.0})
+
+        if tx["tipo"] == "COMPRA":
+            registro["cantidad"] += tx["cantidad"]
+            registro["costo_total"] += tx["cantidad"] * tx["precio_unitario"]
+        else:  # VENTA
+            if registro["cantidad"] > 0:
+                precio_prom = registro["costo_total"] / registro["cantidad"]
+                registro["costo_total"] -= tx["cantidad"] * precio_prom
+            registro["cantidad"] -= tx["cantidad"]
+
+    resultado: dict[str, dict[str, float]] = {}
+    for sim, reg in acumulado.items():
+        if reg["cantidad"] > 0:
+            resultado[sim] = {
+                "cantidad": reg["cantidad"],
+                "costo_total": reg["costo_total"],
+                "precio_promedio": reg["costo_total"] / reg["cantidad"],
+            }
+    return resultado
+
+
+def aplicar_transaccion(
+    estado: dict[str, Any], tx: dict[str, Any]
+) -> dict[str, Any]:
+    """Aplica una transacción y devuelve un NUEVO estado (no muta el original).
+
+    Reglas:
+    * COMPRA: requiere ``cantidad * precio_unitario <= saldo_usd``.
+    * VENTA: requiere ``cantidad <= tenencia_actual_del_simbolo``.
+
+    Lanza :class:`TransaccionInvalida` si las reglas no se cumplen.
+    """
+    monto = tx["cantidad"] * tx["precio_unitario"]
+    nuevo: dict[str, Any] = {
+        "saldo_usd": estado["saldo_usd"],
+        "transacciones": list(estado["transacciones"]),
+    }
+
+    if tx["tipo"] == "COMPRA":
+        if monto > nuevo["saldo_usd"]:
+            raise TransaccionInvalida(
+                f"Saldo insuficiente: requiere ${monto:,.2f}, "
+                f"disponible ${nuevo['saldo_usd']:,.2f}."
+            )
+        nuevo["saldo_usd"] -= monto
+    elif tx["tipo"] == "VENTA":
+        tenencias = calcular_tenencias(estado)
+        actual = tenencias.get(tx["simbolo"], {"cantidad": 0})["cantidad"]
+        if tx["cantidad"] > actual:
+            raise TransaccionInvalida(
+                f"No tiene {tx['cantidad']} de {tx['simbolo']}; "
+                f"tenencia actual: {actual}."
+            )
+        nuevo["saldo_usd"] += monto
+    else:
+        raise TransaccionInvalida(f"Tipo de transacción desconocido: {tx['tipo']!r}.")
+
+    nuevo["transacciones"].append(dict(tx))
+    return nuevo

@@ -12,9 +12,12 @@ import pytest
 
 from logica import (
     SALDO_INICIAL_USD,
+    TransaccionInvalida,
+    aplicar_transaccion,
     calcular_metricas,
     calcular_rsi,
     calcular_smas,
+    calcular_tenencias,
     cargar_portafolio,
     generar_senal,
     guardar_portafolio,
@@ -183,3 +186,76 @@ def test_guardar_y_cargar_es_idempotente(tmp_path) -> None:
     cargado = cargar_portafolio(ruta)
 
     assert cargado == estado
+
+
+# ---------------------------------------------------------------------------
+# T6 — Aplicar transacciones y tenencias
+# ---------------------------------------------------------------------------
+
+def _tx(simbolo: str, tipo: str, cantidad: int, precio: float, fecha: str = "2026-05-07") -> dict:
+    return {
+        "fecha": fecha,
+        "simbolo": simbolo,
+        "tipo": tipo,
+        "cantidad": cantidad,
+        "precio_unitario": precio,
+    }
+
+
+def test_aplicar_compra_descuenta_saldo_y_registra() -> None:
+    estado = {"saldo_usd": 10000.0, "transacciones": []}
+
+    nuevo = aplicar_transaccion(estado, _tx("AAPL", "COMPRA", 10, 187.45))
+
+    # No debe mutar el estado original (función pura).
+    assert estado["saldo_usd"] == 10000.0
+    assert estado["transacciones"] == []
+
+    assert nuevo["saldo_usd"] == pytest.approx(10000.0 - 1874.50)
+    assert nuevo["transacciones"][0]["simbolo"] == "AAPL"
+
+
+def test_aplicar_venta_suma_saldo() -> None:
+    estado = aplicar_transaccion(
+        {"saldo_usd": 10000.0, "transacciones": []},
+        _tx("AAPL", "COMPRA", 10, 100.0),
+    )
+
+    nuevo = aplicar_transaccion(estado, _tx("AAPL", "VENTA", 5, 120.0))
+
+    assert nuevo["saldo_usd"] == pytest.approx(10000.0 - 1000.0 + 600.0)
+    assert len(nuevo["transacciones"]) == 2
+
+
+def test_compra_excede_saldo_lanza_error() -> None:
+    estado = {"saldo_usd": 100.0, "transacciones": []}
+
+    with pytest.raises(TransaccionInvalida):
+        aplicar_transaccion(estado, _tx("AAPL", "COMPRA", 10, 187.45))
+
+
+def test_venta_excede_tenencia_lanza_error() -> None:
+    estado = aplicar_transaccion(
+        {"saldo_usd": 10000.0, "transacciones": []},
+        _tx("AAPL", "COMPRA", 5, 100.0),
+    )
+
+    with pytest.raises(TransaccionInvalida):
+        aplicar_transaccion(estado, _tx("AAPL", "VENTA", 10, 110.0))
+
+
+def test_calcular_tenencias_neta_correctamente() -> None:
+    """Promedio ponderado de costo + ventas que reducen cantidad sin cambiar promedio."""
+    estado = {"saldo_usd": 5000.0, "transacciones": []}
+    estado = aplicar_transaccion(estado, _tx("AAPL", "COMPRA", 10, 100.0))
+    estado = aplicar_transaccion(estado, _tx("AAPL", "COMPRA", 10, 200.0))  # promedio 150
+    estado = aplicar_transaccion(estado, _tx("AAPL", "VENTA", 5, 180.0))    # quedan 15 @150
+    # MSFT independiente
+    estado = aplicar_transaccion(estado, _tx("MSFT", "COMPRA", 3, 300.0))
+
+    tenencias = calcular_tenencias(estado)
+
+    assert tenencias["AAPL"]["cantidad"] == 15
+    assert tenencias["AAPL"]["precio_promedio"] == pytest.approx(150.0)
+    assert tenencias["MSFT"]["cantidad"] == 3
+    assert tenencias["MSFT"]["precio_promedio"] == pytest.approx(300.0)
