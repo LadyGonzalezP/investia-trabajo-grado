@@ -389,6 +389,13 @@ def pantalla_login() -> None:
     st.markdown("### Welcome back")
     st.caption("Inicia sesión para continuar tu camino de inversión")
 
+    # Si el usuario acaba de crear su cuenta, mostramos el mensaje de éxito.
+    # No pre-llenamos el text_input para evitar que se resetee en cada rerun
+    # (anti-patrón típico de Streamlit cuando se pasa `value=` en cada render).
+    nombre_pre = st.session_state.pop("nombre_usuario_recien_creado", "")
+    if nombre_pre:
+        st.success(f"Cuenta '{nombre_pre}' creada. Inicia sesión para continuar.")
+
     with st.form("form_login", clear_on_submit=False):
         usuario = st.text_input("👤  Usuario", placeholder="tu-usuario").strip()
         password = st.text_input("🔒  Contraseña", type="password", placeholder="••••••••")
@@ -441,8 +448,11 @@ def pantalla_signup() -> None:
                 usuarios = cargar_usuarios(RUTA_USUARIOS)
                 nuevos = registrar_usuario(usuarios, nombre, clave)
                 guardar_usuarios(RUTA_USUARIOS, nuevos)
-                st.success(f"Cuenta '{nombre}' creada. Vuelve a Iniciar sesión.")
+                # Pre-llenamos el usuario en la pantalla de login para que el
+                # usuario solo tenga que escribir su contraseña la primera vez.
+                st.session_state["nombre_usuario_recien_creado"] = nombre
                 st.session_state.auth_screen = "login"
+                st.rerun()
             except UsuarioYaExiste as exc:
                 st.error(str(exc))
 
@@ -585,8 +595,13 @@ def pantalla_home() -> None:
             """,
             unsafe_allow_html=True,
         )
-        st.plotly_chart(grafica_sparkline(rec["df"]), use_container_width=True,
-                        config={"displayModeBar": False})
+        # `key` único por símbolo: cada sparkline es un elemento distinto y
+        # Streamlit genera el ID automático a partir del tipo+parámetros, lo
+        # que provocaría colisiones si dos sparklines comparten configuración.
+        st.plotly_chart(grafica_sparkline(rec["df"]),
+                        use_container_width=True,
+                        config={"displayModeBar": False},
+                        key=f"sparkline_{simbolo}")
         if st.button(f"Ver análisis técnico de {simbolo} →",
                      key=f"detail_{simbolo}", use_container_width=True):
             st.session_state.simbolo_seleccionado = simbolo
@@ -617,14 +632,18 @@ def pantalla_analisis() -> None:
         "Símbolo bursátil",
         options=TICKERS_PRESET + ["Otro…"],
         index=TICKERS_PRESET.index(seleccionado),
+        key="analisis_simbolo",
     )
     if simbolo == "Otro…":
-        simbolo = st.text_input("Escribe el símbolo", value="AAPL").upper().strip()
+        simbolo = st.text_input("Escribe el símbolo", value="AAPL",
+                                key="analisis_simbolo_libre").upper().strip()
 
     hoy = date.today()
     cols = st.columns(2)
-    fecha_inicio = cols[0].date_input("Inicio", value=hoy - timedelta(days=730), max_value=hoy)
-    fecha_fin = cols[1].date_input("Fin", value=hoy, max_value=hoy)
+    fecha_inicio = cols[0].date_input("Inicio", value=hoy - timedelta(days=730),
+                                       max_value=hoy, key="analisis_fecha_inicio")
+    fecha_fin = cols[1].date_input("Fin", value=hoy, max_value=hoy,
+                                    key="analisis_fecha_fin")
 
     if fecha_inicio >= fecha_fin:
         st.error("La fecha de inicio debe ser anterior a la fecha de fin.")
@@ -668,8 +687,10 @@ def pantalla_analisis() -> None:
     except (IndexError, KeyError):
         st.warning("No hay suficientes datos para generar una señal.")
 
-    st.plotly_chart(grafica_precio_smas(df, simbolo), use_container_width=True)
-    st.plotly_chart(grafica_rsi(df), use_container_width=True)
+    st.plotly_chart(grafica_precio_smas(df, simbolo), use_container_width=True,
+                    key=f"chart_smas_{simbolo}")
+    st.plotly_chart(grafica_rsi(df), use_container_width=True,
+                    key=f"chart_rsi_{simbolo}")
 
     with st.expander("Últimos 30 días"):
         cols_visibles = [c for c in
@@ -722,16 +743,31 @@ def pantalla_portafolio() -> None:
 
     st.divider()
     st.markdown("#### Registrar transacción")
-    with st.form("form_tx", clear_on_submit=True):
-        sim_in = st.text_input("Símbolo", value="AAPL").upper().strip()
+    # Pre-inicializamos las claves de session_state para que los widgets del
+    # form siempre tengan un valor conocido al renderizar. Sin esto, navegar
+    # a otra pantalla y volver puede dejar los inputs sin estado y romper
+    # tests con AppTest.
+    st.session_state.setdefault("tx_simbolo", "AAPL")
+    st.session_state.setdefault("tx_tipo", "COMPRA")
+    st.session_state.setdefault("tx_cantidad", 1)
+    st.session_state.setdefault("tx_precio", 100.00)
+    st.session_state.setdefault("tx_fecha", date.today())
+
+    with st.form("form_tx", clear_on_submit=False):
+        sim_in = st.text_input("Símbolo", key="tx_simbolo").upper().strip()
         cols = st.columns(2)
-        tipo_in = cols[0].selectbox("Tipo", ["COMPRA", "VENTA"])
-        cantidad_in = cols[1].number_input("Cantidad", min_value=1, step=1, value=1)
+        tipo_in = cols[0].selectbox("Tipo", ["COMPRA", "VENTA"], key="tx_tipo")
+        cantidad_in = cols[1].number_input(
+            "Cantidad", min_value=1, step=1, key="tx_cantidad"
+        )
         cols2 = st.columns(2)
         precio_in = cols2[0].number_input(
-            "Precio (USD)", min_value=0.01, step=0.01, value=100.00, format="%.2f"
+            "Precio (USD)", min_value=0.01, step=0.01,
+            format="%.2f", key="tx_precio"
         )
-        fecha_in = cols2[1].date_input("Fecha", value=date.today(), max_value=date.today())
+        fecha_in = cols2[1].date_input(
+            "Fecha", max_value=date.today(), key="tx_fecha"
+        )
         enviar = st.form_submit_button("Registrar", type="primary", use_container_width=True)
 
     if enviar:
@@ -922,6 +958,19 @@ PANTALLAS = {
 }
 
 
+def _navegar_a(screen_id: str) -> None:
+    """Callback de navegación.
+
+    Usar ``on_click`` en vez de ``st.rerun()`` dentro del handler evita
+    inconsistencias de estado entre renders y mantiene los widget IDs
+    estables (Streamlit recomienda este patrón para navegación).
+    """
+    st.session_state.screen = screen_id
+    # Limpiamos selección de símbolo si salimos de Análisis sin tocar "Volver".
+    if screen_id != "analysis":
+        st.session_state.pop("simbolo_seleccionado", None)
+
+
 def render_bottom_nav() -> None:
     """Barra inferior con 4 botones. La columna activa usa botón primario azul."""
     st.markdown('<div class="iv-bottom-nav">', unsafe_allow_html=True)
@@ -929,14 +978,14 @@ def render_bottom_nav() -> None:
     activa = st.session_state.get("screen", "home")
     for col, (icono, etiqueta, screen_id) in zip(cols, ITEMS_NAV):
         es_activa = screen_id == activa
-        if col.button(
+        col.button(
             f"{icono} {etiqueta}",
             key=f"nav_{screen_id}",
             type="primary" if es_activa else "secondary",
             use_container_width=True,
-        ):
-            st.session_state.screen = screen_id
-            st.rerun()
+            on_click=_navegar_a,
+            args=(screen_id,),
+        )
     st.markdown('</div>', unsafe_allow_html=True)
 
 

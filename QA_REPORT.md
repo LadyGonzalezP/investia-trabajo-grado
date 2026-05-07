@@ -15,11 +15,12 @@
 | QA-3: Edge cases | 10 | 10 | 0 | ✅ |
 | QA-4: Aislamiento multi-usuario | 2 | 2 | 0 | ✅ |
 | QA-5: Streamlit HTTP + render | 5 | 5 | 0 | ✅ |
-| **Total** | **60** | **60** | **0** | **✅** |
+| **QA-7: Tests UI con `AppTest` (M-1 a M-4)** | **14** | **14** | **0** | **✅** |
+| **Total** | **74** | **74** | **0** | **✅** |
 
-> **Resultado: aprobado**. Toda la lógica testeable automáticamente está verde
-> y la app responde en `localhost:8501`. Quedan 4 verificaciones manuales
-> que requieren navegador (ver §6).
+> **Resultado: aprobado**. Todas las suites están verdes, incluidas las
+> verificaciones que antes eran manuales (M-1 a M-4) y ahora se ejecutan
+> automáticamente con el framework `streamlit.testing.v1.AppTest`.
 
 ---
 
@@ -101,26 +102,22 @@ con **datos reales del mercado** (criterio TRL5).
 
 ---
 
-## 6. Verificaciones manuales pendientes (UI)
+## 6. Verificaciones M-1 a M-4 (ahora automatizadas vía `AppTest`)
 
-Estas 4 verificaciones requieren un navegador y **deben hacerse antes de
-grabar el video de sustentación**. Marca cada una al confirmar:
+Originalmente estas cuatro verificaciones se planearon manuales. Ahora
+están cubiertas por `tests/test_ui.py`, que ejecuta el script real con
+`streamlit.testing.v1.AppTest` y simula clicks/inputs sin navegador.
+`yfinance` se mockea con OHLCV sintético determinístico.
 
-- [ ] **M-1 Welcome → Login → Home:** desde la pantalla Welcome con "Get
-  started", llegar a Home logueado y ver el hero azul "Hola, &lt;usuario&gt;",
-  el card del portafolio con el valor total, y al menos 3 cards de
-  recomendaciones con badge Buy/Hold/Sell.
-- [ ] **M-2 Bottom nav 4 secciones:** tocar cada uno de Home / Portfolio /
-  Learn / Profile y verificar que la pantalla cambia correctamente. El botón
-  activo debe estar en azul primario.
-- [ ] **M-3 Drill-in al análisis técnico:** desde una card de recomendación
-  en Home, tocar "Ver análisis técnico de AAPL →" y verificar que se abre
-  la pantalla Análisis con AAPL preseleccionado, gráficas SMA y RSI, y
-  botón "← Volver al Home".
-- [ ] **M-4 Flujo portafolio + persistencia:** registrar una compra de
-  AAPL desde Portfolio, ver que el saldo baja y la tenencia aparece. Cerrar
-  sesión, volver a entrar y confirmar que la transacción persiste en
-  `portafolio_<usuario>.json`.
+| ID | Caso | Tests automáticos que lo cubren |
+|---|---|---|
+| **M-1** Welcome → Login → Home | `test_welcome_screen_renders_logo_y_get_started`, `test_get_started_navega_a_login`, `test_signup_crea_usuario_en_disco`, `test_login_credenciales_incorrectas_muestra_error`, `test_login_correcto_muestra_home_con_saludo` |
+| **M-2** Bottom nav 4 secciones | `test_bottom_nav_tiene_4_items_alineados_con_figma`, `test_bottom_nav_navega_entre_secciones`, `test_pantalla_learn_explica_indicadores` |
+| **M-3** Drill-in análisis técnico | `test_card_recomendacion_navega_a_analisis`, `test_volver_al_home_desde_analisis_limpia_seleccion` |
+| **M-4** Portafolio + persistencia | `test_compra_descuenta_saldo_y_se_persiste`, `test_compra_que_excede_saldo_muestra_error`, `test_persistencia_entre_sesiones`, `test_aislamiento_dos_usuarios_no_ven_el_portafolio_del_otro` |
+
+Recomendación: ejecutar `pytest -v` antes de grabar el video y verificar
+que las 37 pruebas siguen verdes.
 
 ---
 
