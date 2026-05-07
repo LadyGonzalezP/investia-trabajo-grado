@@ -11,10 +11,13 @@ import pandas as pd
 import pytest
 
 from logica import (
+    SALDO_INICIAL_USD,
     calcular_metricas,
     calcular_rsi,
     calcular_smas,
+    cargar_portafolio,
     generar_senal,
+    guardar_portafolio,
 )
 
 
@@ -145,3 +148,38 @@ def test_metricas_calcula_variacion_y_volatilidad() -> None:
     pct = pd.Series(closes).pct_change().dropna()
     esperada = pct.std() * np.sqrt(252) * 100
     assert metricas["volatilidad_anual_pct"] == pytest.approx(esperada)
+
+
+# ---------------------------------------------------------------------------
+# T5 — Persistencia del portafolio
+# ---------------------------------------------------------------------------
+
+def test_cargar_portafolio_inexistente_devuelve_estado_inicial(tmp_path) -> None:
+    """Si el archivo no existe, se entrega el estado inicial vacío."""
+    ruta = tmp_path / "portafolio.json"
+
+    estado = cargar_portafolio(ruta)
+
+    assert estado == {"saldo_usd": SALDO_INICIAL_USD, "transacciones": []}
+
+
+def test_guardar_y_cargar_es_idempotente(tmp_path) -> None:
+    """Guardar un estado y volverlo a cargar debe devolver exactamente lo mismo."""
+    ruta = tmp_path / "portafolio.json"
+    estado = {
+        "saldo_usd": 8125.50,
+        "transacciones": [
+            {
+                "fecha": "2026-05-07",
+                "simbolo": "AAPL",
+                "tipo": "COMPRA",
+                "cantidad": 10,
+                "precio_unitario": 187.45,
+            }
+        ],
+    }
+
+    guardar_portafolio(ruta, estado)
+    cargado = cargar_portafolio(ruta)
+
+    assert cargado == estado

@@ -7,7 +7,9 @@ de forma determinística con pytest.
 """
 from __future__ import annotations
 
-from typing import Iterable
+import json
+from pathlib import Path
+from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
@@ -138,3 +140,38 @@ def calcular_metricas(df: pd.DataFrame) -> dict[str, float]:
         "stop_loss": precio_actual * PORCENTAJE_STOP_LOSS,
         "take_profit": precio_actual * PORCENTAJE_TAKE_PROFIT,
     }
+
+
+# ---------------------------------------------------------------------------
+# Persistencia del portafolio
+# ---------------------------------------------------------------------------
+
+SALDO_INICIAL_USD = 10_000.0
+
+
+def estado_inicial_portafolio() -> dict[str, Any]:
+    """Estado de un portafolio recién creado para un usuario nuevo."""
+    return {"saldo_usd": SALDO_INICIAL_USD, "transacciones": []}
+
+
+def cargar_portafolio(ruta: str | Path) -> dict[str, Any]:
+    """Lee el portafolio desde disco. Si no existe, devuelve el estado inicial."""
+    ruta = Path(ruta)
+    if not ruta.exists():
+        return estado_inicial_portafolio()
+    with ruta.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def guardar_portafolio(ruta: str | Path, estado: dict[str, Any]) -> None:
+    """Persiste el portafolio en disco de forma atómica.
+
+    Escribe a un archivo temporal y luego lo renombra: si el proceso muere a
+    mitad de la escritura, el archivo destino mantiene su contenido anterior y
+    no queda en estado corrupto.
+    """
+    ruta = Path(ruta)
+    tmp = ruta.with_suffix(ruta.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(estado, fh, ensure_ascii=False, indent=2)
+    tmp.replace(ruta)
