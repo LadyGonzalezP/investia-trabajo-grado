@@ -1,13 +1,18 @@
-"""Sistema de apoyo a la toma de decisiones en inversión bursátil.
+"""Sistema de apoyo a la toma de decisiones en inversión bursátil — InvestIA.
 
 Prototipo académico (TRL5) — trabajo de grado.
 
-Aplicación Streamlit de una sola capa:
-* Autenticación local (sha256 + salt) con persistencia en ``usuarios.json``.
-* Análisis técnico de un símbolo bursátil con datos reales de yfinance.
-* Indicadores SMA20, SMA50 y RSI14, señales educativas, métricas y gráficas.
-* Portafolio personal por usuario con saldo USD, registro de compras/ventas
-  y persistencia en ``portafolio_<usuario>.json``.
+Aplicación Streamlit de una sola capa, con diseño visual estilo aplicación
+móvil basado en el prototipo de Figma "InvestIA Mobile App". Mantiene toda
+la lógica de negocio en ``logica.py`` (testeada con pytest) y solo gestiona
+UI, sesión y orquestación aquí.
+
+Pantallas:
+* Welcome → Login / Sign up (flujo de autenticación).
+* Home (dashboard) → AI Recommendations por ticker preset.
+* Análisis → análisis técnico detallado con SMAs, RSI, señales y métricas.
+* Portfolio → tenencias del usuario, transacciones, P&L.
+* Profile → datos del usuario y cierre de sesión.
 
 NO ejecuta operaciones reales; NO es asesoría financiera.
 """
@@ -40,71 +45,282 @@ from logica import (
 )
 
 # ---------------------------------------------------------------------------
-# Constantes
+# Constantes (paleta InvestIA y configuración)
 # ---------------------------------------------------------------------------
 
 RUTA_USUARIOS = Path("usuarios.json")
+
+# Tickers presentados en el Home como "AI Recommendations".
 TICKERS_PRESET = ["AAPL", "MSFT", "TSLA", "NVDA", "SPY"]
 
+# Nombres "amigables" para mostrar bajo el ticker en las cards.
+NOMBRES_TICKER = {
+    "AAPL": "Apple Inc.",
+    "MSFT": "Microsoft Corp.",
+    "TSLA": "Tesla Inc.",
+    "NVDA": "NVIDIA Corp.",
+    "SPY": "S&P 500 ETF",
+}
+
+# Paleta InvestIA — alineada con la captura del Figma.
+COLOR_PRIMARIO = "#2563EB"      # azul botones y header
+COLOR_PRIMARIO_OSCURO = "#1D4ED8"
+COLOR_FONDO = "#FFFFFF"
+COLOR_FONDO_SUAVE = "#F8FAFC"
+COLOR_TEXTO = "#0F172A"
+COLOR_TEXTO_MUTED = "#64748B"
+COLOR_VERDE = "#10B981"         # señal COMPRAR / variaciones positivas
+COLOR_AZUL_INFO = "#3B82F6"     # señal MANTENER
+COLOR_ROJO = "#EF4444"          # señal VENDER / variaciones negativas
+COLOR_BORDE = "#E2E8F0"
+
 DISCLAIMER = (
-    "⚠️ Prototipo académico (TRL5). Las señales y métricas mostradas son "
+    "Prototipo académico (TRL5). Las señales y métricas mostradas son "
     "educativas. **No constituyen asesoría financiera real** y este sistema "
     "no ejecuta operaciones bursátiles reales."
 )
 
 
 def ruta_portafolio_usuario(usuario: str) -> Path:
-    """Cada usuario logueado tiene su propio archivo de portafolio."""
+    """Cada usuario tiene su archivo de portafolio aislado."""
     return Path(f"portafolio_{usuario}.json")
 
 
 # ---------------------------------------------------------------------------
-# Datos de mercado (yfinance) — cacheado para no redescargar en cada interacción
+# CSS móvil — inyectado una sola vez por sesión
+# ---------------------------------------------------------------------------
+
+def inyectar_css() -> None:
+    """Inyecta el CSS que adapta Streamlit al look mobile-first de InvestIA.
+
+    Aplica: contenedor estrecho centrado (efecto móvil), cards con bordes
+    redondeados y sombra suave, badges Buy/Hold/Sell, botones de marca y
+    espaciado reducido. Mantenemos todo el styling en este bloque para que
+    sea sencillo de auditar.
+    """
+    st.markdown(
+        f"""
+        <style>
+        /* Contenedor principal en ancho fijo tipo móvil. */
+        .main .block-container {{
+            max-width: 460px;
+            padding-top: 1rem;
+            padding-bottom: 6rem;  /* espacio para la bottom-nav fija */
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }}
+
+        /* Esconder la barra superior de Streamlit y la sidebar. */
+        header[data-testid="stHeader"] {{ display: none; }}
+        section[data-testid="stSidebar"] {{ display: none; }}
+
+        /* Tipografía y colores base. */
+        html, body, [class*="css"] {{
+            color: {COLOR_TEXTO};
+        }}
+        h1, h2, h3 {{
+            color: {COLOR_TEXTO};
+            font-weight: 700;
+        }}
+
+        /* Cards genéricos (envueltos por nosotros con st.markdown). */
+        .iv-card {{
+            background: white;
+            border: 1px solid {COLOR_BORDE};
+            border-radius: 16px;
+            padding: 1rem 1.1rem;
+            box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+            margin-bottom: 0.9rem;
+        }}
+
+        /* Hero azul (Home). */
+        .iv-hero {{
+            background: {COLOR_PRIMARIO};
+            color: white;
+            border-radius: 0 0 24px 24px;
+            padding: 1.5rem 1.2rem 2.2rem 1.2rem;
+            margin: -1rem -1rem 1.5rem -1rem;
+        }}
+        .iv-hero h2 {{ color: white; margin: 0; font-size: 1.4rem; }}
+        .iv-hero p {{ color: rgba(255,255,255,0.85); margin: 0.3rem 0 0 0; font-size: 0.9rem; }}
+
+        /* Card del valor del portafolio que "flota" sobre el hero. */
+        .iv-portfolio-card {{
+            background: white;
+            border-radius: 16px;
+            padding: 1rem 1.2rem;
+            box-shadow: 0 4px 12px rgba(15,23,42,0.08);
+            margin-top: -2rem;
+            margin-bottom: 1.5rem;
+        }}
+        .iv-portfolio-card .iv-label {{
+            font-size: 0.95rem;
+            color: {COLOR_TEXTO_MUTED};
+        }}
+        .iv-portfolio-card .iv-value {{
+            font-size: 1.7rem;
+            font-weight: 800;
+            color: {COLOR_TEXTO};
+            margin-top: 0.2rem;
+        }}
+        .iv-portfolio-card .iv-delta-pos {{ color: {COLOR_VERDE}; font-weight: 600; }}
+        .iv-portfolio-card .iv-delta-neg {{ color: {COLOR_ROJO};  font-weight: 600; }}
+
+        /* Badges de señal (Buy / Hold / Sell). */
+        .iv-badge {{
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: white;
+            margin-left: 6px;
+            vertical-align: middle;
+        }}
+        .iv-badge-buy  {{ background: {COLOR_VERDE}; }}
+        .iv-badge-hold {{ background: {COLOR_AZUL_INFO}; }}
+        .iv-badge-sell {{ background: {COLOR_ROJO}; }}
+
+        /* Botones primarios y secundarios redondeados. */
+        .stButton > button {{
+            border-radius: 12px;
+            font-weight: 600;
+            padding: 0.55rem 1rem;
+        }}
+        .stButton > button[kind="primary"] {{
+            background: {COLOR_PRIMARIO};
+            border: none;
+        }}
+        .stButton > button[kind="primary"]:hover {{
+            background: {COLOR_PRIMARIO_OSCURO};
+        }}
+
+        /* Inputs con bordes finos InvestIA. */
+        .stTextInput > div > div > input,
+        .stNumberInput > div > div > input,
+        .stDateInput > div > div > input {{
+            border-radius: 10px;
+            border: 1px solid {COLOR_BORDE};
+        }}
+
+        /* Tabs internos (Análisis / Portfolio detalle): aspecto píldora. */
+        .stTabs [data-baseweb="tab-list"] {{
+            gap: 4px;
+        }}
+        .stTabs [data-baseweb="tab"] {{
+            background: {COLOR_FONDO_SUAVE};
+            border-radius: 10px;
+            padding: 0.4rem 0.9rem;
+        }}
+        .stTabs [aria-selected="true"] {{
+            background: {COLOR_PRIMARIO} !important;
+            color: white !important;
+        }}
+
+        /* Bottom navigation: contenedor de las 4 columnas con buttons. */
+        .iv-bottom-nav {{
+            position: fixed;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 100%;
+            max-width: 460px;
+            background: white;
+            border-top: 1px solid {COLOR_BORDE};
+            padding: 0.4rem 0.4rem 0.6rem 0.4rem;
+            z-index: 999;
+            box-shadow: 0 -2px 12px rgba(15,23,42,0.06);
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Datos de mercado (cacheado)
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=3600, show_spinner="Descargando datos del mercado…")
 def descargar_datos(simbolo: str, inicio: date, fin: date) -> pd.DataFrame:
-    """Descarga el OHLCV diario para ``simbolo`` entre ``inicio`` y ``fin``.
-
-    Si yfinance no encuentra el ticker o el rango está fuera de mercado,
-    devuelve un DataFrame vacío. La capa UI muestra un error claro en ese caso.
-    """
+    """Descarga OHLCV diario para el rango pedido. DataFrame vacío si falla."""
     df = yf.download(simbolo, start=inicio, end=fin, progress=False, auto_adjust=False)
     if df.empty:
         return df
-    # Cuando yfinance recibe un solo ticker pero devuelve MultiIndex, lo aplanamos
-    # para poder acceder simplemente a df["Close"].
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
+def datos_recientes_simbolo(simbolo: str, dias: int = 90) -> pd.DataFrame:
+    """Datos recientes para mostrar la mini-gráfica del Home."""
+    fin = date.today()
+    inicio = fin - timedelta(days=dias)
+    return descargar_datos(simbolo, inicio, fin)
+
+
 def precio_actual_simbolo(simbolo: str) -> float | None:
-    """Precio de cierre más reciente para valorar tenencias del portafolio."""
-    df = yf.download(simbolo, period="5d", progress=False, auto_adjust=False)
+    """Último precio de cierre. None si no hay datos disponibles."""
+    df = datos_recientes_simbolo(simbolo, dias=10)
     if df.empty:
         return None
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
     return float(df["Close"].iloc[-1])
 
 
 # ---------------------------------------------------------------------------
-# Gráficas Plotly
+# Componentes visuales reutilizables
 # ---------------------------------------------------------------------------
+
+CLASE_BADGE = {
+    "COMPRAR": ("iv-badge-buy", "Buy"),
+    "MANTENER": ("iv-badge-hold", "Hold"),
+    "VENDER": ("iv-badge-sell", "Sell"),
+}
+
+
+def html_badge(senal: str) -> str:
+    """Devuelve el HTML del badge según la señal interna (COMPRAR/MANTENER/VENDER)."""
+    clase, etiqueta = CLASE_BADGE.get(senal, ("iv-badge-hold", senal))
+    return f'<span class="iv-badge {clase}">{etiqueta}</span>'
+
+
+def grafica_sparkline(df: pd.DataFrame) -> go.Figure:
+    """Mini-barras del Close reciente, estilo del Figma. Sin ejes."""
+    valores = df["Close"].tail(30)
+    fig = go.Figure(go.Bar(
+        x=list(range(len(valores))),
+        y=valores.values,
+        marker=dict(color=COLOR_PRIMARIO),
+    ))
+    fig.update_layout(
+        height=70,
+        margin=dict(l=0, r=0, t=0, b=0),
+        showlegend=False,
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        plot_bgcolor=COLOR_FONDO_SUAVE,
+        paper_bgcolor="white",
+        bargap=0.4,
+    )
+    return fig
+
 
 def grafica_precio_smas(df: pd.DataFrame, simbolo: str) -> go.Figure:
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Cierre", line=dict(color="#1f77b4")))
-    fig.add_trace(go.Scatter(x=df.index, y=df["SMA_20"], name="SMA 20", line=dict(color="#ff7f0e")))
-    fig.add_trace(go.Scatter(x=df.index, y=df["SMA_50"], name="SMA 50", line=dict(color="#2ca02c")))
+    fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Cierre",
+                             line=dict(color=COLOR_PRIMARIO, width=2)))
+    fig.add_trace(go.Scatter(x=df.index, y=df["SMA_20"], name="SMA 20",
+                             line=dict(color="#F59E0B", width=1.5)))
+    fig.add_trace(go.Scatter(x=df.index, y=df["SMA_50"], name="SMA 50",
+                             line=dict(color=COLOR_VERDE, width=1.5)))
     fig.update_layout(
-        title=f"{simbolo}: precio de cierre y medias móviles",
-        xaxis_title="Fecha",
-        yaxis_title="Precio (USD)",
+        title=f"{simbolo} · precio y medias móviles",
+        xaxis_title=None,
+        yaxis_title="USD",
         hovermode="x unified",
-        height=420,
+        height=320,
+        margin=dict(l=10, r=10, t=40, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     return fig
@@ -112,92 +328,265 @@ def grafica_precio_smas(df: pd.DataFrame, simbolo: str) -> go.Figure:
 
 def grafica_rsi(df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=df["RSI_14"], name="RSI 14", line=dict(color="#9467bd")))
-    fig.add_hline(y=70, line_dash="dash", line_color="red",
-                  annotation_text="Sobrecompra (70)", annotation_position="right")
-    fig.add_hline(y=30, line_dash="dash", line_color="green",
-                  annotation_text="Sobreventa (30)", annotation_position="right")
+    fig.add_trace(go.Scatter(x=df.index, y=df["RSI_14"], name="RSI 14",
+                             line=dict(color="#9333EA", width=2)))
+    fig.add_hline(y=70, line_dash="dash", line_color=COLOR_ROJO,
+                  annotation_text="Sobrecompra", annotation_position="right")
+    fig.add_hline(y=30, line_dash="dash", line_color=COLOR_VERDE,
+                  annotation_text="Sobreventa", annotation_position="right")
     fig.update_layout(
-        title="Índice de Fuerza Relativa (RSI 14)",
-        xaxis_title="Fecha",
-        yaxis_title="RSI",
+        title="RSI 14",
+        xaxis_title=None,
+        yaxis_title=None,
         hovermode="x unified",
-        height=300,
+        height=240,
+        margin=dict(l=10, r=10, t=40, b=10),
         yaxis=dict(range=[0, 100]),
     )
     return fig
 
 
 # ---------------------------------------------------------------------------
-# Pantalla de autenticación
+# Pantallas de autenticación: Welcome / Login / Sign up
 # ---------------------------------------------------------------------------
+
+def pantalla_welcome() -> None:
+    """Onboarding: logo, lema y botón 'Get started'."""
+    st.markdown(
+        f"""
+        <div style="text-align:center; padding-top: 4rem;">
+            <div style="
+                display:inline-flex; align-items:center; justify-content:center;
+                width:72px; height:72px; background:{COLOR_PRIMARIO};
+                border-radius:18px; margin-bottom:1.2rem;
+                box-shadow: 0 8px 20px rgba(37,99,235,0.25);
+                font-size:32px; color:white;
+            ">📈</div>
+            <h1 style="margin:0 0 0.6rem 0;">InvestIA</h1>
+            <h3 style="margin:0 0 1rem 0; color:{COLOR_TEXTO};">
+                Invierte con más claridad y menos miedo
+            </h3>
+            <p style="color:{COLOR_TEXTO_MUTED}; max-width:340px; margin: 0 auto;">
+                Tu asistente educativo de inversión que te ayuda a
+                entender el mercado bursátil con confianza.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.write("")
+    st.write("")
+    if st.button("Get started", type="primary", use_container_width=True):
+        st.session_state.auth_screen = "login"
+        st.rerun()
+    st.caption(DISCLAIMER)
+
+
+def pantalla_login() -> None:
+    if st.button("← Atrás", key="back_login"):
+        st.session_state.auth_screen = "welcome"
+        st.rerun()
+    st.markdown("### Welcome back")
+    st.caption("Inicia sesión para continuar tu camino de inversión")
+
+    with st.form("form_login", clear_on_submit=False):
+        usuario = st.text_input("👤  Usuario", placeholder="tu-usuario").strip()
+        password = st.text_input("🔒  Contraseña", type="password", placeholder="••••••••")
+        enviar = st.form_submit_button("Continue", type="primary", use_container_width=True)
+
+    if enviar:
+        usuarios = cargar_usuarios(RUTA_USUARIOS)
+        if verificar_credenciales(usuarios, usuario, password):
+            st.session_state["usuario"] = usuario
+            st.session_state["screen"] = "home"
+            # Limpiamos el flag de pantalla de auth para no quedarnos pegados.
+            st.session_state.pop("auth_screen", None)
+            st.rerun()
+        else:
+            # Mensaje deliberadamente genérico: no revelamos cuál de los dos falló.
+            st.error("Usuario o contraseña incorrectos.")
+
+    st.markdown(
+        f"<p style='text-align:center; margin-top:1.5rem; color:{COLOR_TEXTO_MUTED};'>"
+        "¿No tienes cuenta?</p>",
+        unsafe_allow_html=True,
+    )
+    if st.button("Sign up", key="goto_signup", use_container_width=True):
+        st.session_state.auth_screen = "signup"
+        st.rerun()
+
+
+def pantalla_signup() -> None:
+    if st.button("← Atrás", key="back_signup"):
+        st.session_state.auth_screen = "login"
+        st.rerun()
+    st.markdown("### Crear cuenta")
+    st.caption("3–20 caracteres alfanuméricos · contraseña ≥ 6 caracteres")
+
+    with st.form("form_signup", clear_on_submit=False):
+        nombre = st.text_input("👤  Usuario").strip()
+        clave = st.text_input("🔒  Contraseña", type="password")
+        clave2 = st.text_input("🔒  Confirmar contraseña", type="password")
+        enviar = st.form_submit_button("Crear cuenta", type="primary", use_container_width=True)
+
+    if enviar:
+        if not (3 <= len(nombre) <= 20) or not nombre.isalnum():
+            st.error("El usuario debe ser alfanumérico y tener entre 3 y 20 caracteres.")
+        elif len(clave) < 6:
+            st.error("La contraseña debe tener al menos 6 caracteres.")
+        elif clave != clave2:
+            st.error("Las contraseñas no coinciden.")
+        else:
+            try:
+                usuarios = cargar_usuarios(RUTA_USUARIOS)
+                nuevos = registrar_usuario(usuarios, nombre, clave)
+                guardar_usuarios(RUTA_USUARIOS, nuevos)
+                st.success(f"Cuenta '{nombre}' creada. Vuelve a Iniciar sesión.")
+                st.session_state.auth_screen = "login"
+            except UsuarioYaExiste as exc:
+                st.error(str(exc))
+
 
 def pagina_autenticacion() -> None:
-    """Muestra tabs de Iniciar sesión / Crear cuenta. No accede a nada protegido."""
-    st.title("📈 Sistema de apoyo a la toma de decisiones bursátiles")
-    st.caption(DISCLAIMER)
-    st.divider()
-
-    tab_login, tab_registro = st.tabs(["🔑 Iniciar sesión", "✨ Crear cuenta"])
-
-    with tab_login:
-        with st.form("form_login", clear_on_submit=False):
-            usuario = st.text_input("Usuario").strip()
-            password = st.text_input("Contraseña", type="password")
-            enviar = st.form_submit_button("Entrar", type="primary")
-        if enviar:
-            usuarios = cargar_usuarios(RUTA_USUARIOS)
-            if verificar_credenciales(usuarios, usuario, password):
-                st.session_state["usuario"] = usuario
-                st.rerun()
-            else:
-                # Mensaje genérico a propósito: no revelar si falló el usuario o la clave.
-                st.error("Usuario o contraseña incorrectos.")
-
-    with tab_registro:
-        with st.form("form_registro", clear_on_submit=False):
-            nombre = st.text_input("Nombre de usuario (3–20 caracteres alfanuméricos)").strip()
-            clave = st.text_input("Contraseña (mínimo 6 caracteres)", type="password")
-            clave2 = st.text_input("Confirmar contraseña", type="password")
-            enviar = st.form_submit_button("Crear cuenta", type="primary")
-        if enviar:
-            if not (3 <= len(nombre) <= 20) or not nombre.isalnum():
-                st.error("El nombre debe ser alfanumérico y tener entre 3 y 20 caracteres.")
-            elif len(clave) < 6:
-                st.error("La contraseña debe tener al menos 6 caracteres.")
-            elif clave != clave2:
-                st.error("Las contraseñas no coinciden.")
-            else:
-                try:
-                    usuarios = cargar_usuarios(RUTA_USUARIOS)
-                    nuevos = registrar_usuario(usuarios, nombre, clave)
-                    guardar_usuarios(RUTA_USUARIOS, nuevos)
-                    st.success(
-                        f"Cuenta '{nombre}' creada. Cambia a la pestaña "
-                        f"'Iniciar sesión' para entrar."
-                    )
-                except UsuarioYaExiste as exc:
-                    st.error(str(exc))
+    """Router de pantallas de autenticación según ``st.session_state.auth_screen``."""
+    auth_screen = st.session_state.get("auth_screen", "welcome")
+    if auth_screen == "welcome":
+        pantalla_welcome()
+    elif auth_screen == "login":
+        pantalla_login()
+    elif auth_screen == "signup":
+        pantalla_signup()
 
 
 # ---------------------------------------------------------------------------
-# Sección Análisis
+# Pantalla Home (dashboard con AI Recommendations)
 # ---------------------------------------------------------------------------
 
-def seccion_analisis() -> None:
-    st.subheader("📊 Análisis técnico")
+def _calcular_recomendacion(simbolo: str) -> dict | None:
+    """Calcula la recomendación de un ticker para mostrar en el Home.
 
-    cols = st.columns([2, 2, 2, 2])
-    simbolo = cols[0].text_input("Símbolo bursátil", value="AAPL").upper().strip()
-    preset = cols[1].selectbox("O elige un preset", options=["—"] + TICKERS_PRESET, index=0)
-    if preset != "—":
-        simbolo = preset
+    Devuelve un dict con precio, variación reciente, señal y DataFrame para
+    la sparkline. Si yfinance no devuelve datos, devuelve ``None``.
+    """
+    df = datos_recientes_simbolo(simbolo, dias=120)
+    if df.empty or len(df) < 50:
+        return None
+    df = calcular_smas(df, ventanas=(20, 50))
+    df["RSI_14"] = calcular_rsi(df["Close"], periodo=14)
+    senal, _motivo = generar_senal(df)
+
+    precio_actual = float(df["Close"].iloc[-1])
+    precio_previo = float(df["Close"].iloc[-2])
+    variacion_pct = (precio_actual / precio_previo - 1) * 100
+
+    return {
+        "simbolo": simbolo,
+        "nombre": NOMBRES_TICKER.get(simbolo, simbolo),
+        "precio": precio_actual,
+        "variacion": variacion_pct,
+        "senal": senal,
+        "df": df,
+    }
+
+
+def pantalla_home() -> None:
+    usuario = st.session_state["usuario"]
+    estado = cargar_portafolio(ruta_portafolio_usuario(usuario))
+
+    # Hero azul con saludo personalizado.
+    st.markdown(
+        f"""
+        <div class="iv-hero">
+            <h2>Hola, {usuario.capitalize()}</h2>
+            <p>Aquí están tus recomendaciones personalizadas</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Card flotante con el valor del portafolio.
+    tenencias = calcular_tenencias(estado)
+    valor_tenencias = 0.0
+    for sim, t in tenencias.items():
+        precio = precio_actual_simbolo(sim) or t["precio_promedio"]
+        valor_tenencias += t["cantidad"] * precio
+    valor_total = estado["saldo_usd"] + valor_tenencias
+    delta_total = valor_total - SALDO_INICIAL_USD
+    delta_pct = (delta_total / SALDO_INICIAL_USD) * 100
+    clase_delta = "iv-delta-pos" if delta_total >= 0 else "iv-delta-neg"
+    flecha = "↗" if delta_total >= 0 else "↘"
+
+    st.markdown(
+        f"""
+        <div class="iv-portfolio-card">
+            <div class="iv-label">Valor del portafolio</div>
+            <div class="iv-value">${valor_total:,.2f}</div>
+            <div class="{clase_delta}">{flecha} {delta_total:+,.2f} ({delta_pct:+.2f}%) vs. inicial</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### Recomendaciones")
+
+    # Una card por ticker preset con la señal calculada en vivo.
+    for simbolo in TICKERS_PRESET:
+        rec = _calcular_recomendacion(simbolo)
+        if rec is None:
+            st.markdown(
+                f"<div class='iv-card'><b>{simbolo}</b> · sin datos disponibles</div>",
+                unsafe_allow_html=True,
+            )
+            continue
+
+        color_var = COLOR_VERDE if rec["variacion"] >= 0 else COLOR_ROJO
+        st.markdown(
+            f"""
+            <div class="iv-card">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                    <div>
+                        <div style="font-weight:700; font-size:1.05rem;">
+                            {rec['simbolo']} {html_badge(rec['senal'])}
+                        </div>
+                        <div style="color:{COLOR_TEXTO_MUTED}; font-size:0.85rem;">
+                            {rec['nombre']}
+                        </div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div style="font-weight:700;">${rec['precio']:.2f}</div>
+                        <div style="color:{color_var}; font-size:0.85rem;">
+                            {rec['variacion']:+.2f}%
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        # Mini barchart Plotly como "sparkline".
+        st.plotly_chart(grafica_sparkline(rec["df"]), use_container_width=True,
+                        config={"displayModeBar": False})
+
+
+# ---------------------------------------------------------------------------
+# Pantalla Análisis (técnico detallado)
+# ---------------------------------------------------------------------------
+
+def pantalla_analisis() -> None:
+    st.markdown("### 📊 Análisis técnico")
+
+    simbolo = st.selectbox(
+        "Símbolo bursátil",
+        options=TICKERS_PRESET + ["Otro…"],
+        index=0,
+    )
+    if simbolo == "Otro…":
+        simbolo = st.text_input("Escribe el símbolo", value="AAPL").upper().strip()
 
     hoy = date.today()
-    fecha_inicio = cols[2].date_input(
-        "Fecha de inicio", value=hoy - timedelta(days=730), max_value=hoy
-    )
-    fecha_fin = cols[3].date_input("Fecha de fin", value=hoy, max_value=hoy)
+    cols = st.columns(2)
+    fecha_inicio = cols[0].date_input("Inicio", value=hoy - timedelta(days=730), max_value=hoy)
+    fecha_fin = cols[1].date_input("Fin", value=hoy, max_value=hoy)
 
     if fecha_inicio >= fecha_fin:
         st.error("La fecha de inicio debe ser anterior a la fecha de fin.")
@@ -213,78 +602,71 @@ def seccion_analisis() -> None:
 
     if len(df) < 50:
         st.warning(
-            "El rango es muy corto: la SMA de 50 días aún no es significativa. "
-            "Considera ampliar el rango para una señal más confiable."
+            "Rango muy corto: la SMA50 aún no es significativa. Considera ampliar."
         )
 
-    # Cálculo de indicadores y derivados
     df = calcular_smas(df, ventanas=(20, 50))
     df["RSI_14"] = calcular_rsi(df["Close"], periodo=14)
     metricas = calcular_metricas(df)
 
-    # KPIs principales (5 columnas, según spec)
-    k = st.columns(5)
-    k[0].metric("Precio actual", f"${metricas['precio_actual']:.2f}")
-    k[1].metric("Variación periodo", f"{metricas['variacion_pct']:+.2f}%")
-    k[2].metric("Volatilidad anual", f"{metricas['volatilidad_anual_pct']:.2f}%")
-    k[3].metric("Stop-loss (-5%)", f"${metricas['stop_loss']:.2f}")
-    k[4].metric("Take-profit (+10%)", f"${metricas['take_profit']:.2f}")
+    # KPIs apilados en cards (2 columnas).
+    a, b = st.columns(2)
+    a.metric("Precio actual", f"${metricas['precio_actual']:.2f}")
+    b.metric("Variación periodo", f"{metricas['variacion_pct']:+.2f}%")
+    c, d = st.columns(2)
+    c.metric("Volatilidad anual", f"{metricas['volatilidad_anual_pct']:.2f}%")
+    d.metric("Stop-loss / Take-profit",
+             f"${metricas['stop_loss']:.2f} / ${metricas['take_profit']:.2f}")
 
-    # Señal educativa: el color refuerza visualmente la decisión sugerida.
     try:
         senal, motivo = generar_senal(df)
         if senal == "COMPRAR":
-            st.success(f"📈 Señal: **{senal}** — {motivo}")
+            st.success(f"📈 **{senal}** — {motivo}")
         elif senal == "VENDER":
-            st.error(f"📉 Señal: **{senal}** — {motivo}")
+            st.error(f"📉 **{senal}** — {motivo}")
         else:
-            st.warning(f"⏸️ Señal: **{senal}** — {motivo}")
+            st.warning(f"⏸️ **{senal}** — {motivo}")
         st.caption("_Señal educativa, no es asesoría financiera real._")
     except (IndexError, KeyError):
         st.warning("No hay suficientes datos para generar una señal.")
 
-    # Gráficas Plotly interactivas
     st.plotly_chart(grafica_precio_smas(df, simbolo), use_container_width=True)
     st.plotly_chart(grafica_rsi(df), use_container_width=True)
 
-    # Tabla de los últimos 30 días (suficiente para inspección visual sin saturar)
-    st.subheader("Últimos 30 días")
-    columnas_visibles = [c for c in
+    with st.expander("Últimos 30 días"):
+        cols_visibles = [c for c in
                          ["Open", "High", "Low", "Close", "Volume", "SMA_20", "SMA_50", "RSI_14"]
                          if c in df.columns]
-    st.dataframe(df[columnas_visibles].tail(30).round(2), use_container_width=True)
+        st.dataframe(df[cols_visibles].tail(30).round(2), use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
-# Sección Mi portafolio
+# Pantalla Portfolio (tenencias + transacciones)
 # ---------------------------------------------------------------------------
 
-def seccion_portafolio() -> None:
+def pantalla_portafolio() -> None:
     usuario = st.session_state["usuario"]
     ruta = ruta_portafolio_usuario(usuario)
     estado = cargar_portafolio(ruta)
     tenencias = calcular_tenencias(estado)
 
-    # Valoración a precio de mercado de cada tenencia
-    filas_tenencias: list[dict] = []
+    # Valoración a precio de mercado.
+    filas: list[dict] = []
     valor_tenencias = 0.0
     for sim, t in tenencias.items():
-        precio = precio_actual_simbolo(sim)
-        if precio is None:
-            # Si yfinance falla, usamos el precio promedio como fallback explícito
-            precio = t["precio_promedio"]
+        precio = precio_actual_simbolo(sim) or t["precio_promedio"]
         valor_mercado = t["cantidad"] * precio
         valor_tenencias += valor_mercado
         pnl_abs = valor_mercado - t["costo_total"]
         pnl_pct = (pnl_abs / t["costo_total"]) * 100 if t["costo_total"] else 0.0
-        filas_tenencias.append({
+        filas.append({
             "Símbolo": sim,
-            "Cantidad": t["cantidad"],
-            "Precio promedio (USD)": round(t["precio_promedio"], 2),
-            "Precio actual (USD)": round(precio, 2),
-            "Valor de mercado (USD)": round(valor_mercado, 2),
-            "P&L (USD)": round(pnl_abs, 2),
-            "P&L (%)": round(pnl_pct, 2),
+            "Cant.": t["cantidad"],
+            "Promedio": round(t["precio_promedio"], 2),
+            "Actual": round(precio, 2),
+            "Mercado": round(valor_mercado, 2),
+            "P&L $": round(pnl_abs, 2),
+            "P&L %": round(pnl_pct, 2),
         })
 
     saldo = estado["saldo_usd"]
@@ -292,30 +674,27 @@ def seccion_portafolio() -> None:
     pnl_total = valor_total - SALDO_INICIAL_USD
     pnl_total_pct = (pnl_total / SALDO_INICIAL_USD) * 100
 
-    # KPIs del portafolio
-    k = st.columns(4)
-    k[0].metric("Saldo en efectivo", f"${saldo:,.2f}")
-    k[1].metric("Valor de tenencias", f"${valor_tenencias:,.2f}")
-    k[2].metric("Valor total", f"${valor_total:,.2f}")
-    k[3].metric(
-        "P&L total",
-        f"${pnl_total:+,.2f}",
-        delta=f"{pnl_total_pct:+.2f}%",
-    )
+    st.markdown("### 💼 Mi Portafolio")
+    a, b = st.columns(2)
+    a.metric("Saldo en efectivo", f"${saldo:,.2f}")
+    b.metric("Valor de tenencias", f"${valor_tenencias:,.2f}")
+    c, d = st.columns(2)
+    c.metric("Valor total", f"${valor_total:,.2f}")
+    d.metric("P&L total", f"${pnl_total:+,.2f}", delta=f"{pnl_total_pct:+.2f}%")
 
     st.divider()
-    st.subheader("Registrar transacción")
-
+    st.markdown("#### Registrar transacción")
     with st.form("form_tx", clear_on_submit=True):
-        cols = st.columns([2, 2, 2, 2, 2])
-        sim_in = cols[0].text_input("Símbolo", value="AAPL").upper().strip()
-        tipo_in = cols[1].selectbox("Tipo", ["COMPRA", "VENTA"])
-        cantidad_in = cols[2].number_input("Cantidad", min_value=1, step=1, value=1)
-        precio_in = cols[3].number_input(
-            "Precio unitario (USD)", min_value=0.01, step=0.01, value=100.00, format="%.2f"
+        sim_in = st.text_input("Símbolo", value="AAPL").upper().strip()
+        cols = st.columns(2)
+        tipo_in = cols[0].selectbox("Tipo", ["COMPRA", "VENTA"])
+        cantidad_in = cols[1].number_input("Cantidad", min_value=1, step=1, value=1)
+        cols2 = st.columns(2)
+        precio_in = cols2[0].number_input(
+            "Precio (USD)", min_value=0.01, step=0.01, value=100.00, format="%.2f"
         )
-        fecha_in = cols[4].date_input("Fecha", value=date.today(), max_value=date.today())
-        enviar = st.form_submit_button("Registrar transacción", type="primary")
+        fecha_in = cols2[1].date_input("Fecha", value=date.today(), max_value=date.today())
+        enviar = st.form_submit_button("Registrar", type="primary", use_container_width=True)
 
     if enviar:
         tx = {
@@ -328,33 +707,23 @@ def seccion_portafolio() -> None:
         try:
             nuevo_estado = aplicar_transaccion(estado, tx)
             guardar_portafolio(ruta, nuevo_estado)
-            st.success(
-                f"Transacción {tipo_in} de {cantidad_in} {sim_in} a "
-                f"${precio_in:.2f} registrada."
-            )
+            st.success(f"Transacción {tipo_in} de {cantidad_in} {sim_in} registrada.")
             st.rerun()
         except TransaccionInvalida as exc:
             st.error(str(exc))
 
     st.divider()
-
-    # Tabla de tenencias actuales
-    st.subheader("Tenencias actuales")
-    if filas_tenencias:
-        st.dataframe(pd.DataFrame(filas_tenencias), use_container_width=True, hide_index=True)
+    st.markdown("#### Tenencias actuales")
+    if filas:
+        st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
     else:
         st.info("Aún no tienes posiciones. Registra una compra para empezar.")
 
-    # Histórico de transacciones + deshacer
-    st.subheader("Histórico de transacciones")
+    st.markdown("#### Histórico de transacciones")
     if estado["transacciones"]:
         df_tx = pd.DataFrame(estado["transacciones"])
         st.dataframe(df_tx, use_container_width=True, hide_index=True)
-
-        if st.button("↩️ Deshacer última transacción"):
-            # Recomponemos desde cero a partir del histórico recortado: así el saldo
-            # y las tenencias quedan exactamente como estaban antes de la última tx,
-            # incluso si hubo un encadenamiento complejo de compras/ventas.
+        if st.button("↩️ Deshacer última transacción", use_container_width=True):
             historico_recortado = estado["transacciones"][:-1]
             recompuesto = {"saldo_usd": SALDO_INICIAL_USD, "transacciones": []}
             for tx in historico_recortado:
@@ -362,48 +731,115 @@ def seccion_portafolio() -> None:
             guardar_portafolio(ruta, recompuesto)
             st.rerun()
     else:
-        st.info("Aún no hay transacciones registradas para este usuario.")
+        st.info("Aún no hay transacciones registradas.")
 
 
 # ---------------------------------------------------------------------------
-# Aplicación principal
+# Pantalla Profile
 # ---------------------------------------------------------------------------
+
+def pantalla_profile() -> None:
+    usuario = st.session_state["usuario"]
+
+    st.markdown("### 👤 Perfil")
+    st.markdown(
+        f"""
+        <div class="iv-card" style="text-align:center;">
+            <div style="
+                width:80px; height:80px; margin:0.5rem auto 1rem auto;
+                background:{COLOR_PRIMARIO}; border-radius:50%;
+                display:flex; align-items:center; justify-content:center;
+                color:white; font-size:32px; font-weight:700;">
+                {usuario[0].upper()}
+            </div>
+            <div style="font-weight:700; font-size:1.2rem;">{usuario}</div>
+            <div style="color:{COLOR_TEXTO_MUTED}; font-size:0.9rem;">
+                Sesión activa
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### Acerca del prototipo")
+    st.markdown(
+        f"""
+        <div class="iv-card">
+            <p>Prototipo académico (TRL5) del trabajo de grado
+            <b>"Sistema de apoyo a la toma de decisiones en inversión
+            bursátil basado en datos históricos"</b>.</p>
+            <p style="color:{COLOR_TEXTO_MUTED}; font-size:0.85rem;">
+            Datos: Yahoo Finance · Indicadores: SMA20, SMA50, RSI14 ·
+            Persistencia local en JSON.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.warning(DISCLAIMER)
+
+    if st.button("Cerrar sesión", type="primary", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Bottom navigation y router principal
+# ---------------------------------------------------------------------------
+
+ITEMS_NAV = [
+    ("🏠", "Home", "home"),
+    ("📊", "Análisis", "analysis"),
+    ("💼", "Portfolio", "portfolio"),
+    ("👤", "Profile", "profile"),
+]
+
+PANTALLAS = {
+    "home": pantalla_home,
+    "analysis": pantalla_analisis,
+    "portfolio": pantalla_portafolio,
+    "profile": pantalla_profile,
+}
+
+
+def render_bottom_nav() -> None:
+    """Barra inferior con 4 botones. La columna activa usa botón primario azul."""
+    st.markdown('<div class="iv-bottom-nav">', unsafe_allow_html=True)
+    cols = st.columns(len(ITEMS_NAV))
+    activa = st.session_state.get("screen", "home")
+    for col, (icono, etiqueta, screen_id) in zip(cols, ITEMS_NAV):
+        es_activa = screen_id == activa
+        if col.button(
+            f"{icono} {etiqueta}",
+            key=f"nav_{screen_id}",
+            type="primary" if es_activa else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state.screen = screen_id
+            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
 
 def main() -> None:
     st.set_page_config(
-        page_title="Sistema de apoyo bursátil",
+        page_title="InvestIA",
         page_icon="📈",
-        layout="wide",
+        layout="centered",
+        initial_sidebar_state="collapsed",
     )
+    inyectar_css()
 
-    # Si el usuario no ha iniciado sesión, mostramos solo la pantalla de auth.
+    # Si no hay usuario logueado, mostramos solo el flujo de auth.
     if "usuario" not in st.session_state:
         pagina_autenticacion()
         return
 
-    # Sidebar: estado de sesión + cerrar sesión
-    with st.sidebar:
-        st.success(f"Sesión activa: **{st.session_state['usuario']}**")
-        st.caption("Cada usuario solo ve y modifica su propio portafolio.")
-        if st.button("Cerrar sesión", use_container_width=True):
-            st.session_state.clear()
-            st.rerun()
-        st.divider()
-        st.markdown("**Tickers de referencia:**\n\n" + ", ".join(TICKERS_PRESET))
+    # Pantalla actual (default Home).
+    screen = st.session_state.setdefault("screen", "home")
+    PANTALLAS.get(screen, pantalla_home)()
 
-    # Disclaimer permanente arriba
-    st.info(DISCLAIMER)
-    st.title("📈 Sistema de apoyo a la toma de decisiones bursátiles")
-
-    tab_analisis, tab_portafolio = st.tabs(["📊 Análisis", "💼 Mi portafolio"])
-    with tab_analisis:
-        seccion_analisis()
-    with tab_portafolio:
-        seccion_portafolio()
-
-    # Disclaimer permanente al pie
-    st.divider()
-    st.caption(DISCLAIMER)
+    # Bottom nav siempre visible (excepto en pantalla de auth).
+    render_bottom_nav()
 
 
 if __name__ == "__main__":
