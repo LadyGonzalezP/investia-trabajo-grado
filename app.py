@@ -466,27 +466,33 @@ def _calcular_recomendacion(simbolo: str) -> dict | None:
     """Calcula la recomendación de un ticker para mostrar en el Home.
 
     Devuelve un dict con precio, variación reciente, señal y DataFrame para
-    la sparkline. Si yfinance no devuelve datos, devuelve ``None``.
+    la sparkline. Si yfinance no devuelve datos o algo falla en el cálculo,
+    devuelve ``None`` (la home muestra un placeholder en su lugar).
     """
-    df = datos_recientes_simbolo(simbolo, dias=120)
-    if df.empty or len(df) < 50:
+    try:
+        df = datos_recientes_simbolo(simbolo, dias=120)
+        if df.empty or len(df) < 50:
+            return None
+        df = calcular_smas(df, ventanas=(20, 50))
+        df["RSI_14"] = calcular_rsi(df["Close"], periodo=14)
+        senal, _motivo = generar_senal(df)
+
+        precio_actual = float(df["Close"].iloc[-1])
+        precio_previo = float(df["Close"].iloc[-2])
+        variacion_pct = (precio_actual / precio_previo - 1) * 100
+
+        return {
+            "simbolo": simbolo,
+            "nombre": NOMBRES_TICKER.get(simbolo, simbolo),
+            "precio": precio_actual,
+            "variacion": variacion_pct,
+            "senal": senal,
+            "df": df,
+        }
+    except Exception:
+        # yfinance puede lanzar errores transitorios; nunca queremos que el
+        # Home muera por uno de los 5 tickers.
         return None
-    df = calcular_smas(df, ventanas=(20, 50))
-    df["RSI_14"] = calcular_rsi(df["Close"], periodo=14)
-    senal, _motivo = generar_senal(df)
-
-    precio_actual = float(df["Close"].iloc[-1])
-    precio_previo = float(df["Close"].iloc[-2])
-    variacion_pct = (precio_actual / precio_previo - 1) * 100
-
-    return {
-        "simbolo": simbolo,
-        "nombre": NOMBRES_TICKER.get(simbolo, simbolo),
-        "precio": precio_actual,
-        "variacion": variacion_pct,
-        "senal": senal,
-        "df": df,
-    }
 
 
 def pantalla_home() -> None:
@@ -529,9 +535,25 @@ def pantalla_home() -> None:
 
     st.markdown("### Recomendaciones")
 
-    # Una card por ticker preset con la señal calculada en vivo.
-    for simbolo in TICKERS_PRESET:
-        rec = _calcular_recomendacion(simbolo)
+    # Pre-calcular para saber si TODAS fallaron (caso degradado típico cuando
+    # yfinance está temporalmente abajo o la red bloquea Yahoo Finance).
+    with st.spinner("Calculando recomendaciones…"):
+        recs = [(simbolo, _calcular_recomendacion(simbolo)) for simbolo in TICKERS_PRESET]
+
+    if all(rec is None for _, rec in recs):
+        st.warning(
+            "No se pudieron cargar datos de mercado en este momento. "
+            "Yahoo Finance puede estar lento o bloqueado. Intenta de nuevo en "
+            "un par de minutos o revisa tu conexión."
+        )
+        return
+
+    # Una card por ticker preset con la señal calculada en vivo. La card es
+    # un bloque visual (HTML), y debajo va un botón ancho que navega a
+    # Análisis técnico para ese símbolo. Streamlit no permite hacer
+    # `onClick` en HTML arbitrario sin componentes externos, así que el
+    # botón es la forma idiomática de navegar.
+    for simbolo, rec in recs:
         if rec is None:
             st.markdown(
                 f"<div class='iv-card'><b>{simbolo}</b> · sin datos disponibles</div>",
@@ -542,7 +564,7 @@ def pantalla_home() -> None:
         color_var = COLOR_VERDE if rec["variacion"] >= 0 else COLOR_ROJO
         st.markdown(
             f"""
-            <div class="iv-card">
+            <div class="iv-card" style="margin-bottom:0;">
                 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                     <div>
                         <div style="font-weight:700; font-size:1.05rem;">
@@ -563,9 +585,13 @@ def pantalla_home() -> None:
             """,
             unsafe_allow_html=True,
         )
-        # Mini barchart Plotly como "sparkline".
         st.plotly_chart(grafica_sparkline(rec["df"]), use_container_width=True,
                         config={"displayModeBar": False})
+        if st.button(f"Ver análisis técnico de {simbolo} →",
+                     key=f"detail_{simbolo}", use_container_width=True):
+            st.session_state.simbolo_seleccionado = simbolo
+            st.session_state.screen = "analysis"
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -573,12 +599,24 @@ def pantalla_home() -> None:
 # ---------------------------------------------------------------------------
 
 def pantalla_analisis() -> None:
+    # Si venimos desde el Home tocando una recomendación, vuelve a la home
+    # con un botón claro. Mejor UX que "perderse" en una sub-pantalla.
+    if st.session_state.get("simbolo_seleccionado"):
+        if st.button("← Volver al Home", key="back_home_from_analysis"):
+            st.session_state.pop("simbolo_seleccionado", None)
+            st.session_state.screen = "home"
+            st.rerun()
+
     st.markdown("### 📊 Análisis técnico")
 
+    # Si el usuario llegó tocando una recomendación, pre-seleccionamos su ticker.
+    seleccionado = st.session_state.get("simbolo_seleccionado", TICKERS_PRESET[0])
+    if seleccionado not in TICKERS_PRESET:
+        TICKERS_PRESET.append(seleccionado)
     simbolo = st.selectbox(
         "Símbolo bursátil",
         options=TICKERS_PRESET + ["Otro…"],
-        index=0,
+        index=TICKERS_PRESET.index(seleccionado),
     )
     if simbolo == "Otro…":
         simbolo = st.text_input("Escribe el símbolo", value="AAPL").upper().strip()
@@ -735,6 +773,84 @@ def pantalla_portafolio() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Pantalla Learn (contenido educativo)
+# ---------------------------------------------------------------------------
+
+def pantalla_learn() -> None:
+    st.markdown("### 📚 Aprende")
+    st.caption("Conceptos clave para entender las señales del prototipo.")
+
+    st.markdown(
+        f"""
+        <div class="iv-card">
+            <h4 style="margin-top:0;">📈 Media Móvil Simple (SMA)</h4>
+            <p>Promedio del precio de cierre en una ventana de tiempo.
+            Cuando la <b>SMA20</b> (corto plazo) cruza por encima de la
+            <b>SMA50</b> (largo plazo) es señal de <b>tendencia alcista</b>;
+            cuando cruza por debajo, suele indicar tendencia bajista.</p>
+        </div>
+
+        <div class="iv-card">
+            <h4 style="margin-top:0;">⚖️ Índice de Fuerza Relativa (RSI)</h4>
+            <p>Mide la velocidad y magnitud de los cambios de precio
+            (escala 0–100).</p>
+            <ul>
+              <li><b>RSI &gt; 70</b>: posible <b>sobrecompra</b> — el activo
+              podría estar caro.</li>
+              <li><b>RSI &lt; 30</b>: posible <b>sobreventa</b> — podría estar
+              barato.</li>
+              <li><b>30–70</b>: zona neutra.</li>
+            </ul>
+        </div>
+
+        <div class="iv-card">
+            <h4 style="margin-top:0;">🎯 Cómo se generan las señales</h4>
+            <table style="width:100%; font-size:0.9rem;">
+              <tr style="text-align:left; color:{COLOR_TEXTO_MUTED};">
+                <th>Condición</th><th>Señal</th>
+              </tr>
+              <tr>
+                <td>SMA20 &gt; SMA50 <i>y</i> RSI &lt; 70</td>
+                <td>{html_badge('COMPRAR')}</td>
+              </tr>
+              <tr>
+                <td>SMA20 &lt; SMA50 <i>o</i> RSI &gt; 70</td>
+                <td>{html_badge('VENDER')}</td>
+              </tr>
+              <tr>
+                <td>cualquier otro caso</td>
+                <td>{html_badge('MANTENER')}</td>
+              </tr>
+            </table>
+        </div>
+
+        <div class="iv-card">
+            <h4 style="margin-top:0;">💡 Volatilidad anualizada</h4>
+            <p>Mide cuánto tiende a fluctuar el precio.
+            Calculada como la desviación estándar de los retornos diarios
+            multiplicada por √252 (días hábiles del año). Mayor volatilidad
+            = más riesgo y más oportunidad.</p>
+        </div>
+
+        <div class="iv-card" style="background:{COLOR_FONDO_SUAVE};">
+            <h4 style="margin-top:0;">⚠️ Recordatorio</h4>
+            <p style="margin-bottom:0;">Estas reglas son <b>educativas</b>.
+            Los analistas profesionales combinan muchas más variables:
+            fundamentales de la empresa, contexto macroeconómico, eventos
+            geopolíticos, fiscalidad, etc. <b>No es asesoría financiera.</b></p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if st.button("Probar el análisis técnico →", type="primary",
+                 use_container_width=True):
+        st.session_state.screen = "analysis"
+        st.session_state.pop("simbolo_seleccionado", None)
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Pantalla Profile
 # ---------------------------------------------------------------------------
 
@@ -787,18 +903,22 @@ def pantalla_profile() -> None:
 # Bottom navigation y router principal
 # ---------------------------------------------------------------------------
 
+# Bottom nav alineado con el Figma de InvestIA: 4 tabs.
+# El Análisis técnico es una pantalla "interior" a la que se llega desde
+# las recomendaciones del Home o desde Learn, no desde el bottom nav.
 ITEMS_NAV = [
     ("🏠", "Home", "home"),
-    ("📊", "Análisis", "analysis"),
     ("💼", "Portfolio", "portfolio"),
+    ("📚", "Learn", "learn"),
     ("👤", "Profile", "profile"),
 ]
 
 PANTALLAS = {
     "home": pantalla_home,
-    "analysis": pantalla_analisis,
     "portfolio": pantalla_portafolio,
+    "learn": pantalla_learn,
     "profile": pantalla_profile,
+    "analysis": pantalla_analisis,  # accesible solo via cards/Learn
 }
 
 
@@ -834,9 +954,13 @@ def main() -> None:
         pagina_autenticacion()
         return
 
-    # Pantalla actual (default Home).
+    # Pantalla actual (default Home). Envolvemos en try/except para que un
+    # error en una pantalla nunca esconda la barra inferior de navegación.
     screen = st.session_state.setdefault("screen", "home")
-    PANTALLAS.get(screen, pantalla_home)()
+    try:
+        PANTALLAS.get(screen, pantalla_home)()
+    except Exception as exc:
+        st.error(f"Error al renderizar la pantalla '{screen}': {exc}")
 
     # Bottom nav siempre visible (excepto en pantalla de auth).
     render_bottom_nav()
